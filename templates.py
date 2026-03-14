@@ -43,7 +43,7 @@ def gen_birth_date():
 def gen_expiry_date():
     month = random.randint(1, 12)
     year  = random.randint(25, 30)
-    return random.choice([f"{month:02d}/{year}", f"{month:02d}/{year+2000-2000}"])
+    return random.choice([f"{month:02d}/{year}", f"{month:02d}/{2000 + year}"])
 
 def gen_reg_date():
     return gen_date(1980, 2020)
@@ -561,13 +561,344 @@ def generate_example(label: str) -> dict:
     }
 
 
-def generate_df(n_per_label: int = 10) -> "pl.DataFrame":
+# ─── Комбо-шаблоны (2–3 ПД в одном тексте) ───────────────────────────────────
+# Формат: (шаблон, {placeholder: (generator_fn, label)})
+# Placeholder-ы перечислены в порядке их появления в шаблоне.
+
+def _holder():
+    return fake.first_name().upper() + " " + fake.last_name().upper()
+
+COMBO_TEMPLATES = [
+    # ── Идентификация личности ──
+    (
+        "Для верификации сообщаю данные: {fio}, дата рождения {dob}, паспорт {passport}.",
+        {"fio": (gen_full_name, "ФИО"), "dob": (gen_birth_date, "Дата рождения"),
+         "passport": (gen_passport, "Паспортные данные")},
+    ),
+    (
+        "Меня зовут {fio}, родился {dob}. Прошу восстановить доступ к личному кабинету.",
+        {"fio": (gen_full_name, "ФИО"), "dob": (gen_birth_date, "Дата рождения")},
+    ),
+    (
+        "ФИО клиента: {fio}, паспорт {passport}. Подтвердите личность для проведения операции.",
+        {"fio": (gen_full_name, "ФИО"), "passport": (gen_passport, "Паспортные данные")},
+    ),
+    (
+        "{fio}, паспорт {passport}, адрес доставки карты: {address}.",
+        {"fio": (gen_full_name, "ФИО"), "passport": (gen_passport, "Паспортные данные"),
+         "address": (gen_address, "Полный адрес")},
+    ),
+    (
+        "Полные данные: {fio}, СНИЛС {snils}, паспорт {passport}. Нужна расширенная верификация.",
+        {"fio": (gen_full_name, "ФИО"), "snils": (gen_snils, "СНИЛС клиента"),
+         "passport": (gen_passport, "Паспортные данные")},
+    ),
+
+    # ── Контактные данные ──
+    (
+        "Мои контакты: {fio}, телефон {phone}, email {email}. Прошу обновить профиль.",
+        {"fio": (gen_full_name, "ФИО"), "phone": (gen_phone, "Номер телефона"),
+         "email": (gen_email, "Email")},
+    ),
+    (
+        "Для связи: {fio}, номер {phone}. Перезвоните, пожалуйста.",
+        {"fio": (gen_full_name, "ФИО"), "phone": (gen_phone, "Номер телефона")},
+    ),
+    (
+        "Уведомления не приходят. Проверьте телефон {phone} и почту {email} в профиле.",
+        {"phone": (gen_phone, "Номер телефона"), "email": (gen_email, "Email")},
+    ),
+
+    # ── Открытие счёта / KYC ──
+    (
+        "Открываю счёт. {fio}, телефон {phone}, дата рождения {dob}.",
+        {"fio": (gen_full_name, "ФИО"), "phone": (gen_phone, "Номер телефона"),
+         "dob": (gen_birth_date, "Дата рождения")},
+    ),
+    (
+        "{fio}, ИНН {inn}, СНИЛС {snils} — все данные для пенсионного перевода.",
+        {"fio": (gen_full_name, "ФИО"), "inn": (gen_inn_personal, "Сведения об ИНН"),
+         "snils": (gen_snils, "СНИЛС клиента")},
+    ),
+    (
+        "Для налогового вычета: {fio}, ИНН {inn}, счёт {account}.",
+        {"fio": (gen_full_name, "ФИО"), "inn": (gen_inn_personal, "Сведения об ИНН"),
+         "account": (gen_account_number, "Номер банковского счета")},
+    ),
+
+    # ── Данные карты ──
+    (
+        "Карта {card}, срок действия {expiry}. Онлайн-оплата не проходит.",
+        {"card": (gen_card_number, "Номер карты"),
+         "expiry": (gen_expiry_date, "Дата окончания срока действия карты")},
+    ),
+    (
+        "Данные карты: номер {card}, CVV {cvv}, срок {expiry}. Почему отклоняется платёж?",
+        {"card": (gen_card_number, "Номер карты"), "cvv": (gen_cvv, "CVV/CVC"),
+         "expiry": (gen_expiry_date, "Дата окончания срока действия карты")},
+    ),
+    (
+        "Имя на карте {holder}, номер {card}. За рубежом платёж не принимают.",
+        {"holder": (_holder, "Имя держателя карты"), "card": (gen_card_number, "Номер карты")},
+    ),
+    (
+        "Перевод получателю {fio} на счёт {account} из {bank}.",
+        {"fio": (gen_full_name, "ФИО"), "account": (gen_account_number, "Номер банковского счета"),
+         "bank": (gen_bank_name, "Наименование банка")},
+    ),
+
+    # ── Аутентификация ──
+    (
+        "Пароль {password} не подходит, а код из СМС {otp} уже истёк. Как войти?",
+        {"password": (gen_password, "Пароли"), "otp": (gen_otp, "Одноразовые коды")},
+    ),
+    (
+        "Кодовое слово {code_word}, одноразовый код {otp}. Прошу провести операцию.",
+        {"code_word": (gen_code_word, "Кодовые слова"), "otp": (gen_otp, "Одноразовые коды")},
+    ),
+    (
+        "Токен {api_key} и пароль {password} скомпрометированы. Прошу заблокировать доступ.",
+        {"api_key": (gen_api_key, "API ключи"), "password": (gen_password, "Пароли")},
+    ),
+
+    # ── Адрес + регистрация ──
+    (
+        "Адрес регистрации: {address}. Прописан с {reg_date}.",
+        {"address": (gen_address, "Полный адрес"),
+         "reg_date": (gen_reg_date, "Дата регистрации по месту жительства или пребывания")},
+    ),
+    (
+        "Фактический адрес: {address}. Дата регистрации {reg_date}, место рождения {city}.",
+        {"address": (gen_address, "Полный адрес"),
+         "reg_date": (gen_reg_date, "Дата регистрации по месту жительства или пребывания"),
+         "city": (gen_city, "Место рождения")},
+    ),
+
+    # ── Иностранный гражданин ──
+    (
+        "Гражданство {country}, имею {visa_type}. Хочу открыть счёт.",
+        {"country": (gen_country, "Гражданство и названия стран"),
+         "visa_type": (gen_visa_type, "Разрешение на работу / визу")},
+    ),
+    (
+        "Я гражданин {country}, ВНЖ серии {rp}. Могу оформить кредитную карту?",
+        {"country": (gen_country, "Гражданство и названия стран"),
+         "rp": (gen_residence_permit, "Серия и номер вида на жительство")},
+    ),
+
+    # ── Автомобиль ──
+    (
+        "Оформляю КАСКО. Владелец: {fio}, автомобиль {car}.",
+        {"fio": (gen_full_name, "ФИО"), "car": (gen_car_info, "Данные об автомобиле клиента")},
+    ),
+
+    # ── Организация + банк ──
+    (
+        "Реквизиты контрагента: {org}. Счёт открыт в {bank}.",
+        {"org": (gen_org_data, "Данные об организации/юридическом лице (ИНН, КПП, ОГРН, БИК, адреса, расчётный счёт)"),
+         "bank": (gen_bank_name, "Наименование банка")},
+    ),
+    (
+        "Входящий платёж от {org} не поступил. Отправляли из {bank}.",
+        {"org": (gen_org_data, "Данные об организации/юридическом лице (ИНН, КПП, ОГРН, БИК, адреса, расчётный счёт)"),
+         "bank": (gen_bank_name, "Наименование банка")},
+    ),
+
+    # ── Свидетельство о рождении ──
+    (
+        "Для детской карты: свидетельство {birth_cert}, дата рождения {dob}.",
+        {"birth_cert": (gen_birth_cert, "Свидетельство о рождении"),
+         "dob": (gen_birth_date, "Дата рождения")},
+    ),
+]
+
+
+def generate_combo_example() -> dict:
+    """
+    Генерирует пример с 2–3 ПД из COMBO_TEMPLATES.
+    Возвращает dict: text, target (несколько спанов), entity (первая сущность).
+    """
+    template, ph_map = random.choice(COMBO_TEMPLATES)
+    ordered_phs = re.findall(r"\{(\w+)\}", template)
+
+    values = {ph: fn() for ph, (fn, _) in ph_map.items()}
+
+    # Строим текст и собираем спаны, заменяя placeholder-ы по порядку
+    text = template
+    spans = []
+    for ph in ordered_phs:
+        val   = values[ph]
+        label = ph_map[ph][1]
+        ph_str = "{" + ph + "}"
+        idx   = text.index(ph_str)
+        text  = text[:idx] + val + text[idx + len(ph_str):]
+        spans.append((idx, idx + len(val), label))
+
+    # Диалоговая обёртка — сдвигаем все спаны на длину префикса
+    ctx = random.choice(DIALOG_CONTEXTS)
+    prefix_len = ctx.index("{}")
+    text = ctx.format(text)
+    spans = [(s + prefix_len, e + prefix_len, lbl) for s, e, lbl in spans]
+
+    target_str = "[" + ", ".join(f"({s}, {e}, '{lbl}')" for s, e, lbl in spans) + "]"
+    return {
+        "text":   text,
+        "target": target_str,
+        "entity": spans[0][2],  # метка первой сущности
+    }
+
+
+
+
+# ─── Негативные примеры (без ПД) ─────────────────────────────────────────────
+
+def _rnd_amount():
+    return f"{random.choice([500, 1000, 1500, 2000, 3000, 5000, 10000, 15000, 25000, 50000])} рублей"
+
+def _rnd_period():
+    return random.choice(["3 месяца", "6 месяцев", "9 месяцев", "1 год", "2 года", "3 года"])
+
+def _rnd_product():
+    return random.choice([
+        "дебетовую карту", "кредитную карту", "вклад", "накопительный счёт",
+        "ипотеку", "потребительский кредит", "автокредит", "страховку",
+    ])
+
+def _rnd_channel():
+    return random.choice(["в мобильном приложении", "на сайте", "в банкомате", "в отделении"])
+
+def _rnd_wait():
+    return random.choice(["час", "два часа", "полдня", "сутки", "три дня", "неделю"])
+
+def _rnd_error():
+    return random.choice(["ошибку 403", "ошибку 500", "«Сервис недоступен»",
+                          "«Операция отклонена»", "«Неверный запрос»", "пустой экран"])
+
+def _rnd_fee():
+    return random.choice(["комиссию", "списание", "штраф", "пени", "неожиданное удержание"])
+
+
+# Каждый шаблон — строка с {placeholder}, generators — вспомогательные (не ПД)
+NEGATIVE_TEMPLATES = [
+
+    # Проблемы со входом
+    "Не могу войти {channel}, приложение выдаёт {error}. Что делать?",
+    "После обновления приложения перестал работать вход {channel}.",
+    "Двухфакторная аутентификация не работает уже {wait}.",
+    "Сессия постоянно сбрасывается {channel}, приходится заходить заново каждые 10 минут.",
+    "При попытке войти через Face ID получаю {error}.",
+
+    # Переводы и платежи
+    "Отправил перевод {wait} назад, деньги до сих пор не дошли. Что происходит?",
+    "Перевод завис в статусе «в обработке» уже {wait}.",
+    "Оплата {channel} не проходит, хотя баланс достаточный.",
+    "Хочу отменить перевод — возможно ли это, если он ещё не исполнен?",
+    "Платёж за коммунальные услуги прошёл дважды, как вернуть лишнее списание?",
+    "Не могу оплатить покупку {channel}, терминал говорит «Отклонено банком».",
+    "Автоплатёж за интернет не сработал в этом месяце, хотя деньги на счёте есть.",
+
+    # Карты
+    "Карта {channel} не читается, хотя физически не повреждена.",
+    "Банкомат забрал карту и не вернул. Как её получить обратно?",
+    "Бесконтактная оплата перестала работать после смены чехла на телефоне.",
+    "Карта заблокирована после трёх неверных попыток ввода, как разблокировать?",
+    "Хочу перевыпустить карту досрочно — сколько это стоит?",
+    "Установил лимит на снятие наличных, но он не применяется.",
+
+    # Продукты и условия
+    "Какой процент по вкладу на {period}?",
+    "Хочу оформить {product} — какие документы нужны?",
+    "Можно ли досрочно погасить {product} без штрафов?",
+    "Изменились ли условия по моему вкладу после последнего обновления тарифов?",
+    "Как рассчитывается кешбэк по этой карте?",
+    "Работает ли карта за границей без предварительного уведомления банка?",
+    "Каков минимальный взнос для открытия накопительного счёта?",
+    "Есть ли у вас программа рефинансирования кредита из другого банка?",
+
+    # Технические проблемы
+    "Приложение зависает на экране загрузки после последнего обновления.",
+    "История операций {channel} не отображается за прошлый месяц.",
+    "Push-уведомления о транзакциях перестали приходить две недели назад.",
+    "Не могу загрузить выписку — кнопка скачивания неактивна.",
+    "График платежей по кредиту не открывается {channel}.",
+    "QR-код для оплаты не сканируется в магазине.",
+
+    # Жалобы
+    "Списали {fee} без предупреждения. Прошу объяснить основание.",
+    "Оператор на горячей линии не смог ответить на мой вопрос и повесил трубку.",
+    "Уже третий раз обращаюсь с одной проблемой, и её никто не решает.",
+    "Получил отказ в {product} без объяснения причин, хочу знать почему.",
+    "Обещали перезвонить {wait} назад — никто так и не позвонил.",
+
+    # Общие вопросы
+    "Как подключить автоплатёж за ЖКХ {channel}?",
+    "Как установить индивидуальный лимит на онлайн-покупки?",
+    "Можно ли открыть совместный счёт на двух владельцев?",
+    "Как получить справку о наличии счёта для визы?",
+    "В каком отделении можно открыть {product} прямо сегодня?",
+    "Сколько времени занимает проверка заявки на {product}?",
+]
+
+_NEG_GENERATORS = {
+    "channel":  _rnd_channel,
+    "error":    _rnd_error,
+    "wait":     _rnd_wait,
+    "period":   _rnd_period,
+    "product":  _rnd_product,
+    "fee":      _rnd_fee,
+    "amount":   _rnd_amount,
+}
+
+
+def generate_negative_example() -> dict:
+    """Генерирует пример без ПД. target=[], entity=''."""
+    template = random.choice(NEGATIVE_TEMPLATES)
+    placeholders = re.findall(r"\{(\w+)\}", template)
+
+    text = template
+    for ph in placeholders:
+        text = text.replace("{" + ph + "}", _NEG_GENERATORS[ph](), 1)
+
+    ctx = random.choice(DIALOG_CONTEXTS)
+    text = ctx.format(text)
+
+    return {"text": text, "target": "[]", "entity": ""}
+
+
+def generate_df(
+    n_total: int = 1000,
+    neg_frac: float = 0.3,
+    combo_frac: float = 0.2,
+) -> "pl.DataFrame":
+    """
+    n_total     — общее число примеров
+    neg_frac    — доля примеров без ПД     (0.0–1.0), по умолчанию 30 %
+    combo_frac  — доля комбо-примеров (2–3 ПД) среди позитивных, по умолчанию 20 %
+
+    Оставшиеся позитивные примеры распределяются равномерно по одиночным меткам.
+    """
     import polars as pl
-    rows = [generate_example(label) for label in TEMPLATES for _ in range(n_per_label)]
+
+    n_negative = round(n_total * neg_frac)
+    n_positive = n_total - n_negative
+    n_combo    = round(n_positive * combo_frac)
+    n_single   = n_positive - n_combo
+
+    # одиночные: равномерно по меткам
+    per_label, remainder = divmod(n_single, len(TEMPLATES))
+    labels = list(TEMPLATES.keys())
+    single_labels = labels * per_label + labels[:remainder]
+
+    rows  = [generate_example(lbl) for lbl in single_labels]
+    rows += [generate_combo_example()    for _ in range(n_combo)]
+    rows += [generate_negative_example() for _ in range(n_negative)]
+
+    random.shuffle(rows)
     return pl.DataFrame(rows)
 
 
 if __name__ == "__main__":
     import polars as pl
-    df = generate_df(n_per_label=20)
+    df = generate_df(n_total=4000, neg_frac=0.2, combo_frac=0.5)
     df.write_csv("synthetic.csv")
+    print(df.head(5))
